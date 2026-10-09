@@ -1,22 +1,19 @@
-# PULSE CMMS — JELIX portfolio MVP
+# PULSE CMMS v0.2.1 — Cloudflare Workers fix
 
-Cloudflare Pages + Pages Functions + D1 database. Public maintenance requests automatically generate work orders. No build command needed.
+This build targets the **existing GitHub-connected Cloudflare Worker** named `pulse` (not Pages). It serves `public/` and routes `/api/*` through `src/worker.js` into the existing PULSE API, including administrator setup, login, work orders, public ticket intake, and Fiix CSV migration.
 
-## Deploy (GitHub + Cloudflare)
-1. Create a new GitHub repository and upload the **contents** of this folder, preserving `public/`, `functions/` and `migrations/`.
-2. In Cloudflare, create a D1 database named `pulse-db` under Storage & databases → D1.
-3. Open D1's SQL console, paste and execute `migrations/0001_init.sql`.
-4. Workers & Pages → Create → Pages → Connect to Git → select repository. Choose **no framework**, leave build command blank, set build output directory to `public`.
-5. In the Pages project, Settings → Bindings → Add → D1 database. Set **variable name `PULSE_DB`** and select `pulse-db`. Add it to production (and preview if testing previews). **Redeploy** after binding.
-6. Open your Cloudflare Pages URL. The first visitor is prompted to create the administrator. **Create the admin immediately before sharing the link**.
-7. Test outside ticket submission from the login page, then log in and verify a work order appears under Request Intake and Work Orders.
+## Deployment
 
-## Important before commercial launch
-This is an initial pilot, not a production-hardened commercial CMMS. Public intake has a honeypot but **needs Turnstile, rate limiting and abuse controls**. First-admin bootstrap is first-come-first-served: set it up immediately; restrict the site until complete. Add CSRF protections, password reset, MFA, granular authorization, audit trails, tenant/site separation, email notifications, backups, privacy/retention controls, attachments and more robust validation before deploying to real customers. Role labels exist, but work order authorization is not yet granular. Do not enter sensitive facility or personal information in this pilot.
+1. Upload **the contents** of this ZIP to the root of the existing `jmyall93/pulse` GitHub repository (replace previous files as needed). Ensure `wrangler.jsonc`, `src/`, and `public/` are at repository root.
+2. In Cloudflare Workers & Pages → `pulse` → Settings → Build, confirm the Git integration deploys using **`npx wrangler deploy`** (or `npm run deploy`). Do not deploy just `public/` as static assets. Root directory should be repository root.
+3. Redeploy from GitHub. Cloudflare should now show a Worker script and the `PULSE_DB` D1 binding.
+4. Check `https://pulse.jeffmyall6.workers.dev/api/health` for `{"ok":true}`. Check `/api/setup-status` for `{"needsSetup":true}` if no users exist.
+5. Reload the main site. The first-admin setup screen should appear when the users table is empty.
 
-## Scope
-Implemented: first admin bootstrap, salted PBKDF2 password hashing, HttpOnly secure sessions, admin-created user accounts, outside ticket → work order, work order creation/status/assignment, priority queue, search/filter, mobile-friendly dashboard. Planned: asset registry, PM scheduling, inventory, technician mobile workflows, reporting, multi-tenancy, JWorks/TRACE integrations.
+## Database
 
+This build uses the existing D1 database `pulse-db` (ID in `wrangler.jsonc`). It **does not** automatically reset or migrate production data. Run `0001_init.sql` then `0002_migration.sql` only if their tables are missing; do not delete existing data. D1 binding is `PULSE_DB`.
 
-## v0.2 Migration Studio
-After deploying, run `migrations/0002_migration.sql` in the SAME D1 database. Go to Migration Studio as administrator or manager. Upload separate Fiix CSV exports in order: assets, work orders, scheduled maintenance. Map fields, validate, preview and confirm import. Original Fiix IDs are used as source-scoped deduplication keys. Re-imports skip existing IDs (no update). PMs import disabled to avoid accidentally generating work orders. Imports run in batches of 100; each upload is limited to 5 MB / 10,000 parsed rows. Export reports vary by Fiix version; adjust field mapping accordingly. Only CSV is supported in this version. Theme choices are stored per browser, not yet synchronized to user profiles. Test on staging before production.
+## Security / pilot limits
+
+Initial setup is open while no user exists: **do not share the public URL before claiming the administrator account**. For commercial production, add protected setup, abuse/rate limiting for public tickets and login, CSRF protection, tenant isolation, and a security audit. This release is for pilot testing.

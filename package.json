@@ -1,1 +1,13 @@
-{"name":"jelix-pulse-cmms","version":"0.1.0","private":true,"scripts":{"dev":"wrangler pages dev public --d1=PULSE_DB","deploy":"wrangler pages deploy public"},"devDependencies":{"wrangler":"^4.0.0"}}
+{
+  "name": "jelix-pulse-cmms",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local:init": "wrangler d1 execute pulse-db --local --file=migrations/0001_init.sql",
+    "db:local:migrate": "wrangler d1 execute pulse-db --local --file=migrations/0002_migration.sql"
+  },
+  "devDependencies": {"wrangler": "^4.0.0"}
+}

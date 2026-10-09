@@ -1,0 +1,17 @@
+{
+  "name": "pulse",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-09",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "PULSE_DB",
+      "database_name": "pulse-db",
+      "database_id": "1c77771d-4df8-44f2-a2b9-9f5217dc9ec7"
+    }
+  ]
+}
