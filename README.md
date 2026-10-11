@@ -1,36 +1,52 @@
-# PULSE CMMS v0.5 — Enterprise Foundation (pilot build)
+# PULSE v0.6 — Experience Rebuild (deployment candidate)
 
-## Deployment
-1. Back up the **production** `pulse-db` D1 database using Cloudflare D1 Time Travel.
-2. Ensure migrations 0001 through 0004 are already applied. Verify with `PRAGMA table_info(assets);` and check that `equipment_models` exists.
-3. Apply **migrations/0005_enterprise_pm.sql once** in Cloudflare D1 Console. This migration uses `ALTER TABLE`; rerunning will produce duplicate-column errors.
-4. Upload the extracted files to the root of existing GitHub repository `jmyall93/pulse` and commit.
-5. Set Cloudflare Workers deployment command to `npx wrangler deploy`; the existing `wrangler.jsonc` references the existing `pulse-db` and configures an hourly cron (`0 * * * *`). Confirm the Cron Trigger is active in Cloudflare after deployment.
-6. Sign in at the existing PULSE URL. Verify **Sites**, **Assets**, **Preventive Maintenance**, **Audit Trail**, and **Administration**.
+A redesigned, data-connected PULSE CMMS built from the v0.5 Cloudflare Workers/D1 application. This is a **test candidate**, not a production-certified release.
 
-## New capabilities
-- Dedicated Assets navigation; equipment library remains in Assets.
-- Create sites (company admin), site membership API, site-scoped reads for assets/work orders/PMs.
-- Create recurring PM plans with calendar-based day/week/month/year intervals, initially paused; activate to schedule automatic work-order creation.
-- Hourly scheduled Worker uses D1 batch transactions and a unique `(pm_id, due_date)` key to prevent duplicate work orders for the same occurrence.
-- Audit events for key site, PM, and work-order actions.
-- Expanded Administration navigation and retained appearance controls.
+## What's included
 
-## Important pilot limitations
-- This is **not** production-ready multi-tenant authorization. Existing endpoints (including Fiix migration, document access, some asset profile and team functions) require a complete permission and tenant isolation review. Some company/site fields remain legacy free text. Public ticket intake currently routes to `pulse-demo` only.
-- Existing imported PMs remain disabled until explicitly configured with supported recurrence fields.
-- Company-level appearance preference storage endpoint exists, but the interface still primarily uses browser-local preferences.
-- Site membership management currently has a backend endpoint but not a full UI. Custom role editor is not implemented; five predefined roles remain.
-- Audit logging covers selected actions, not every data mutation; audit records are not tamper-proof.
-- Scheduler is hourly and handles up to 100 due plans per invocation; monitoring and backlog draining require further work. It is not yet end-to-end verified in Cloudflare.
-- Creating a PM requires an existing asset; when using a site-specific PM, the asset must have a matching `site_id`. Existing assets can remain unassigned; a site assignment UI is still needed.
-- Manual discovery remains an external search/review workflow, not autonomous manual verification.
-- Before onboarding any real customer, implement complete tenant/site isolation, security tests, backups, role-permission matrix, user/site administration, rate limiting, CSRF protection and stronger password policy.
+- New responsive enterprise interface: Command Center, Work Orders, PM, Planner, Assets, Maintenance Requests, Report Builder, Settings.
+- Real D1-backed lists and detail panels (no fake dashboard metrics).
+- Professional full-page-like creation workspace in a slide-out drawer, with technician assignment and site selection for work orders and PMs.
+- Expanded PM calendar intervals: daily, weekly, monthly, quarterly (3 months), semiannual (6 months), annual, and custom multiples of days/weeks/months/years. PMs start paused and require activation. Cron Trigger generates WOs with inherited assignee.
+- Per-user saved appearance, density, visible modules and dashboard widget settings.
+- Live tabular Report Builder with saved report definitions and CSV export.
+- Existing user auth, equipment library, asset registry, sites, audit, and migration endpoints retained.
 
-## Quick test
-1. Create a site (Sites).
-2. Create an asset (Assets); use an unassigned site for the first PM smoke test.
-3. Create a PM due today (Preventive Maintenance), then Activate.
-4. Verify the Cloudflare Cron Trigger is configured and let it execute. Confirm exactly one work order is created with source `Scheduled PM`.
-5. Confirm the PM next due date advances. Run the scheduled handler again; it must not create a duplicate for the same occurrence.
-6. Check Audit Trail for the PM create/activate events.
+## BEFORE DEPLOYMENT: DATABASE BACKUP AND SCHEMA REPAIR
+
+**IMPORTANT:** Earlier v0.5 deployments had partially applied migrations. DO NOT run all ALTER TABLE migrations again or recreate the D1 database. The `scripts/repair_d1.mjs` utility checks remote D1 table/column presence before making additive changes.
+
+1. In Cloudflare, make a D1 backup / Time Travel bookmark of `pulse-db`.
+2. Extract the ZIP and open a terminal in the project directory. Run `npm install`.
+3. Ensure you are authenticated with Wrangler (`npx wrangler whoami`).
+4. Run `node scripts/repair_d1.mjs` to **preview** the exact schema additions against the remote database. No writes occur.
+5. Review the output. When ready, run `node scripts/repair_d1.mjs --apply`. This adds only missing v0.5/v0.6 tables and columns and idempotent indexes. If an error occurs, stop and inspect before retrying.
+6. Run `npm run deploy` to deploy the Worker and assets.
+7. Verify `/api/health`, sign in, and test Assets, PM, Sites, Audit, Report Builder, Settings, and PM auto-generation.
+
+The reconciliation utility assumes earlier migrations through v0.4 were applied. If the foundational `assets`, `pm_plans`, or `work_orders` tables are absent, it aborts rather than guessing. It does not attempt to repair unrelated schema changes. Back up first.
+
+## Verification checklist
+
+- [ ] Existing admin login works.
+- [ ] All sidebar pages load without D1 errors.
+- [ ] Company/site-specific data is not accessible to unauthorized accounts.
+- [ ] Create an asset, work order, and PM; verify assignee persisted.
+- [ ] Activate a PM due today; verify scheduled Worker generates one WO and inherits assignee. Confirm duplicate protection.
+- [ ] Pause PM and verify future occurrences stop.
+- [ ] Change theme, density, navigation, dashboard widgets; sign out/in and confirm persistence.
+- [ ] Save a report, export CSV and confirm content.
+- [ ] Check audit logs for create/update actions.
+- [ ] Test phone-sized layout and keyboard navigation.
+
+## Known gaps and limitations
+
+- The Maintenance Planner is a chronological timeline, not yet a drag-and-drop technician calendar.
+- Saved reports store the report definition; advanced charting, scheduled delivery and PDF export are not yet implemented.
+- The Fiix Migration Studio UI is not recreated yet, although existing migration endpoints remain. Retain your previous migration workflow until the new interface is validated.
+- The asset-detail drawer shows current record data, not yet a complete documentation/history workspace.
+- Company/role/site security has not undergone a comprehensive external audit. Legacy v0.4 import endpoints need further tenant-isolation hardening before multi-customer production use.
+- Request intake submission remains available at `/api/ticket`, but the dedicated public submission form is not included in this release.
+- Automatic PM scheduler uses hourly UTC Cron. The system needs production tests for concurrency, due dates, timezone rules and high-volume catch-up.
+
+**Do not onboard paying customers until these gaps and the security test plan are addressed.**
