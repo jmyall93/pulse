@@ -5,6 +5,7 @@ async function sha(s){return hex(await crypto.subtle.digest('SHA-256',enc.encode
 async function passwordHash(password,salt){const key=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:enc.encode(salt),iterations:210000,hash:'SHA-256'},key,256))}
 const cookie=(token,maxAge)=>`pulse_session=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
 const uid=()=>crypto.randomUUID();
+const logFailure=(e,route)=>{const id=uid();console.error('PULSE API failure',JSON.stringify({incident:id,route,name:e?.name||'Error',message:String(e?.message||e).slice(0,350)}));return id};
 async function current(request,db){const token=request.headers.get('Cookie')?.match(/(?:^|;\s*)pulse_session=([^;]+)/)?.[1];if(!token)return null;return await db.prepare('SELECT u.id,u.name,u.email,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?').bind(await sha(token),Date.now()).first()}
 async function body(request){try{return await request.json()}catch{return {}}}
 const clean=(v,n=300)=>String(v??'').trim().slice(0,n);
@@ -14,10 +15,10 @@ export async function onRequest({request,env}){
  try{
  if(path==='health')return json({ok:true});
  if(path==='setup'&&method==='POST'){
-  const existing=await db.prepare('SELECT COUNT(*) AS n FROM users').first();if(existing.n)return json({error:'Setup already completed'},403);
+  const existing=await db.prepare('SELECT COUNT(*) AS n FROM users').first();if(Number(existing?.n||0)>0)return json({error:'Setup already completed'},403);
   const b=await body(request),name=clean(b.name,100),email=clean(b.email,180).toLowerCase(),password=String(b.password||'');
   if(!name||!/^\S+@\S+\.\S+$/.test(email)||password.length<12)return json({error:'Name, valid email and password of 12+ characters required'},400);
-  const salt=uid();await db.prepare('INSERT INTO users(id,name,email,password_hash,salt,role) VALUES(?,?,?,?,?,?)').bind(uid(),name,email,await passwordHash(password,salt),salt,'admin').run();return json({ok:true});
+  const salt=uid();const hash=await passwordHash(password,salt);await db.prepare('INSERT INTO users(id,name,email,password_hash,salt,role) VALUES(?,?,?,?,?,?)').bind(uid(),name,email,hash,salt,'admin').run();return json({ok:true});
  }
  if(path==='setup-status'&&method==='GET'){const row=await db.prepare('SELECT COUNT(*) AS n FROM users').first();return json({needsSetup:row.n===0})}
  if(path==='login'&&method==='POST'){
@@ -81,5 +82,5 @@ export async function onRequest({request,env}){
   const salt=uid();await db.prepare('INSERT INTO users(id,name,email,password_hash,salt,role) VALUES(?,?,?,?,?,?)').bind(uid(),name,email,await passwordHash(password,salt),salt,role).run();return json({ok:true},201);
  }
  return json({error:'Not found or not permitted'},404);
- }catch(e){return json({error:'Request failed. Check data and try again.'},500)}
+ }catch(e){const incident=logFailure(e,path);return json({error:'Server error. Contact your administrator with incident ID '+incident,incident},500)}
 }

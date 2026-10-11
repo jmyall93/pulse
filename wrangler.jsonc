@@ -1,4 +1,3 @@
-
 {
   "name": "pulse",
   "main": "src/worker.js",
@@ -6,7 +5,9 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": [
+      "/api/*"
+    ]
   },
   "d1_databases": [
     {
