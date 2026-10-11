@@ -2,29 +2,30 @@ const json=(v,s=200,headers={})=>new Response(JSON.stringify(v),{status:s,header
 const enc=new TextEncoder();
 const hex=b=>Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('');
 async function sha(s){return hex(await crypto.subtle.digest('SHA-256',enc.encode(s)))}
-async function passwordHash(password,salt){const key=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:enc.encode(salt),iterations:210000,hash:'SHA-256'},key,256))}
+async function passwordHash(password,salt){const key=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:enc.encode(salt),iterations:100000,hash:'SHA-256'},key,256))}
 const cookie=(token,maxAge)=>`pulse_session=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
 const uid=()=>crypto.randomUUID();
-const logFailure=(e,route)=>{const id=uid();console.error('PULSE API failure',JSON.stringify({incident:id,route,name:e?.name||'Error',message:String(e?.message||e).slice(0,350)}));return id};
-async function current(request,db){const token=request.headers.get('Cookie')?.match(/(?:^|;\s*)pulse_session=([^;]+)/)?.[1];if(!token)return null;return await db.prepare('SELECT u.id,u.name,u.email,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?').bind(await sha(token),Date.now()).first()}
+async function current(request,db){const token=request.headers.get('Cookie')?.match(/(?:^|;\s*)pulse_session=([^;]+)/)?.[1];if(!token)return null;return await db.prepare('SELECT u.id,u.name,u.email,u.role,u.company_id,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?').bind(await sha(token),Date.now()).first()}
 async function body(request){try{return await request.json()}catch{return {}}}
 const clean=(v,n=300)=>String(v??'').trim().slice(0,n);
+const companyId=v=>clean(v,64).toLowerCase();
+const usernameOf=v=>clean(v,80).toLowerCase();
 export async function onRequest({request,env}){
  const db=env.PULSE_DB;if(!db)return json({error:'D1 binding PULSE_DB is missing. See README.'},503);
  const url=new URL(request.url),path=url.pathname.replace(/^\/api\/?/,'');const method=request.method;
  try{
  if(path==='health')return json({ok:true});
  if(path==='setup'&&method==='POST'){
-  const existing=await db.prepare('SELECT COUNT(*) AS n FROM users').first();if(Number(existing?.n||0)>0)return json({error:'Setup already completed'},403);
-  const b=await body(request),name=clean(b.name,100),email=clean(b.email,180).toLowerCase(),password=String(b.password||'');
-  if(!name||!/^\S+@\S+\.\S+$/.test(email)||password.length<12)return json({error:'Name, valid email and password of 12+ characters required'},400);
-  const salt=uid();const hash=await passwordHash(password,salt);await db.prepare('INSERT INTO users(id,name,email,password_hash,salt,role) VALUES(?,?,?,?,?,?)').bind(uid(),name,email,hash,salt,'admin').run();return json({ok:true});
+  const existing=await db.prepare('SELECT COUNT(*) AS n FROM users').first();if(existing.n)return json({error:'Setup already completed'},403);
+  const b=await body(request),name=clean(b.name,100),email=clean(b.email,180).toLowerCase(),username=usernameOf(b.username),company=companyId(b.company_id),password=String(b.password??'');
+  if(!name||!/^\S+@\S+\.\S+$/.test(email)||!username||!/^[a-z0-9._-]+$/.test(username)||company!=='pulse-demo'||!password.length)return json({error:'Enter name, email, username, company ID pulse-demo and a non-empty password'},400);
+  const salt=uid();await db.prepare('INSERT INTO users(id,name,email,password_hash,salt,role,company_id,username) VALUES(?,?,?,?,?,?,?,?)').bind(uid(),name,email,await passwordHash(password,salt),salt,'admin',company,username).run();return json({ok:true});
  }
  if(path==='setup-status'&&method==='GET'){const row=await db.prepare('SELECT COUNT(*) AS n FROM users').first();return json({needsSetup:row.n===0})}
  if(path==='login'&&method==='POST'){
-  const b=await body(request),u=await db.prepare('SELECT * FROM users WHERE email=?').bind(clean(b.email,180).toLowerCase()).first();
+  const b=await body(request),company=companyId(b.company_id),username=usernameOf(b.username);if(!company||!username)return json({error:'Company ID and username required'},400);const u=await db.prepare('SELECT * FROM users WHERE company_id=? AND username=?').bind(company,username).first();
   if(!u||await passwordHash(String(b.password||''),u.salt)!==u.password_hash)return json({error:'Invalid email or password'},401);
-  const token=uid()+uid();await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await sha(token),u.id,Date.now()+7*86400000).run();return json({user:{id:u.id,name:u.name,email:u.email,role:u.role}},200,{'Set-Cookie':cookie(token,604800)});
+  const token=uid()+uid();await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await sha(token),u.id,Date.now()+7*86400000).run();return json({user:{id:u.id,name:u.name,email:u.email,role:u.role,company_id:u.company_id,username:u.username}},200,{'Set-Cookie':cookie(token,604800)});
  }
  if(path==='logout'&&method==='POST'){const token=request.headers.get('Cookie')?.match(/(?:^|;\s*)pulse_session=([^;]+)/)?.[1];if(token)await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await sha(token)).run();return json({ok:true},200,{'Set-Cookie':cookie('',0)})}
  if(path==='ticket'&&method==='POST'){
@@ -75,12 +76,12 @@ export async function onRequest({request,env}){
   const b=await body(request),status=clean(b.status,40),assigned=clean(b.assigned_to,120);if(!['New','Assigned','In Progress','On Hold','Completed','Closed'].includes(status))return json({error:'Invalid status'},400);
   const r=await db.prepare('UPDATE work_orders SET status=?,assigned_to=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(status,assigned,match[1]).run();return json({ok:r.meta.changes>0});
  }
- if(path==='users'&&method==='GET'&&user.role==='admin'){const rows=await db.prepare('SELECT id,name,email,role,created_at FROM users ORDER BY name').all();return json({users:rows.results})}
+ if(path==='users'&&method==='GET'&&user.role==='admin'){const rows=await db.prepare('SELECT id,name,email,username,company_id,role,created_at FROM users WHERE company_id=? ORDER BY name').bind(user.company_id).all();return json({users:rows.results})}
  if(path==='users'&&method==='POST'&&user.role==='admin'){
-  const b=await body(request),name=clean(b.name,100),email=clean(b.email,180).toLowerCase(),password=String(b.password||''),role=clean(b.role,30);
-  if(!name||!/^\S+@\S+\.\S+$/.test(email)||password.length<12||!['admin','manager','supervisor','technician','viewer'].includes(role))return json({error:'Invalid user fields'},400);
-  const salt=uid();await db.prepare('INSERT INTO users(id,name,email,password_hash,salt,role) VALUES(?,?,?,?,?,?)').bind(uid(),name,email,await passwordHash(password,salt),salt,role).run();return json({ok:true},201);
+  const b=await body(request),name=clean(b.name,100),email=clean(b.email,180).toLowerCase(),username=usernameOf(b.username),password=String(b.password??''),role=clean(b.role,30);
+  if(!name||!/^\S+@\S+\.\S+$/.test(email)||!username||!/^[a-z0-9._-]+$/.test(username)||!password.length||!['admin','manager','supervisor','technician','viewer'].includes(role))return json({error:'Invalid user fields'},400);
+  const salt=uid();await db.prepare('INSERT INTO users(id,name,email,password_hash,salt,role,company_id,username) VALUES(?,?,?,?,?,?,?,?)').bind(uid(),name,email,await passwordHash(password,salt),salt,role,user.company_id,username).run();return json({ok:true},201);
  }
  return json({error:'Not found or not permitted'},404);
- }catch(e){const incident=logFailure(e,path);return json({error:'Server error. Contact your administrator with incident ID '+incident,incident},500)}
+ }catch(e){return json({error:'Request failed. Check data and try again.'},500)}
 }
