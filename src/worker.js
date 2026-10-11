@@ -1,6 +1,10 @@
 import { onRequest } from './api.js';
 
 export default {
+  async scheduled(event, env, ctx) {
+    const {runPmScheduler}=await import('./api.js');
+    ctx.waitUntil(runPmScheduler(env.PULSE_DB));
+  },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
