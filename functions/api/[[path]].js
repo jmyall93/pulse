@@ -65,6 +65,50 @@ export async function onRequest({request,env}){
   }
   return json({inserted,skipped,errors});
  }
+
+ // Asset registry and reusable equipment-model library. Company scoped.
+ if(path==='equipment'&&method==='GET'){
+  const rows=await db.prepare('SELECT * FROM equipment_models WHERE company_id=? ORDER BY manufacturer,model LIMIT 500').bind(user.company_id).all();return json({equipment:rows.results});
+ }
+ if(path==='equipment'&&method==='POST'){
+  if(!['admin','manager','supervisor'].includes(user.role))return json({error:'Insufficient permissions'},403);
+  const b=await body(request),manufacturer=clean(b.manufacturer,120),model=clean(b.model,160);
+  if(!manufacturer||!model)return json({error:'Manufacturer and model are required'},400);
+  const id=uid();await db.prepare('INSERT INTO equipment_models(id,company_id,manufacturer,model,category,description) VALUES(?,?,?,?,?,?)').bind(id,user.company_id,manufacturer,model,clean(b.category,120),clean(b.description,2000)).run();return json({ok:true,id},201);
+ }
+ if(path==='assets'&&method==='GET'){
+  const rows=await db.prepare('SELECT a.*,e.manufacturer,e.model FROM assets a LEFT JOIN equipment_models e ON e.id=a.equipment_model_id AND e.company_id=a.company_id WHERE a.company_id=? ORDER BY a.name LIMIT 1000').bind(user.company_id).all();return json({assets:rows.results});
+ }
+ if(path==='assets'&&method==='POST'){
+  if(!['admin','manager','supervisor'].includes(user.role))return json({error:'Insufficient permissions'},403);
+  const b=await body(request),code=clean(b.code,100),name=clean(b.name,180),modelId=clean(b.equipment_model_id,80);
+  if(!code||!name)return json({error:'Asset ID and name required'},400);
+  if(modelId){const e=await db.prepare('SELECT id FROM equipment_models WHERE id=? AND company_id=?').bind(modelId,user.company_id).first();if(!e)return json({error:'Equipment model not found'},400)}
+  const id=uid();await db.prepare('INSERT INTO assets(id,code,name,location,description,source,company_id,equipment_model_id,site,building,system_name,serial_number,status,manufacturer,model) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,code,name,clean(b.location,180),clean(b.description,3000),'PULSE',user.company_id,modelId||null,clean(b.site,120),clean(b.building,120),clean(b.system_name,120),clean(b.serial_number,120),clean(b.status,50)||'Operational',clean(b.manufacturer,120),clean(b.model,160)).run();return json({ok:true,id},201);
+ }
+ const assetPath=path.match(/^assets\/([^/]+)$/);
+ if(assetPath&&method==='GET'){
+  const asset=await db.prepare('SELECT a.*,e.manufacturer AS library_manufacturer,e.model AS library_model FROM assets a LEFT JOIN equipment_models e ON e.id=a.equipment_model_id AND e.company_id=a.company_id WHERE a.id=? AND a.company_id=?').bind(assetPath[1],user.company_id).first();if(!asset)return json({error:'Asset not found'},404);
+  const docs=asset.equipment_model_id?await db.prepare('SELECT * FROM equipment_documents WHERE company_id=? AND equipment_model_id=? ORDER BY document_type,title').bind(user.company_id,asset.equipment_model_id).all():{results:[]};
+  const pms=await db.prepare('SELECT * FROM pm_plans WHERE company_id=? AND asset_code=? ORDER BY title').bind(user.company_id,asset.code).all();
+  const history=await db.prepare('SELECT id,title,status,created_at FROM work_orders WHERE asset=? ORDER BY created_at DESC LIMIT 100').bind(asset.code).all();
+  return json({asset,documents:docs.results,pmPlans:pms.results,history:history.results});
+ }
+ if(path==='equipment/documents'&&method==='POST'){
+  if(!['admin','manager','supervisor'].includes(user.role))return json({error:'Insufficient permissions'},403);
+  const b=await body(request),modelId=clean(b.equipment_model_id,80),title=clean(b.title,200),link=clean(b.url,1500),type=clean(b.document_type,80);
+  const model=await db.prepare('SELECT id FROM equipment_models WHERE id=? AND company_id=?').bind(modelId,user.company_id).first();if(!model)return json({error:'Equipment model not found'},404);
+  let parsed;try{parsed=new URL(link)}catch{return json({error:'Enter a valid HTTPS document URL'},400)}
+  if(parsed.protocol!=='https:'||!title)return json({error:'HTTPS URL and title required'},400);
+  const id=uid();await db.prepare('INSERT INTO equipment_documents(id,company_id,equipment_model_id,title,document_type,url,revision,verification_status,added_by) VALUES(?,?,?,?,?,?,?,?,?)').bind(id,user.company_id,modelId,title,type||'Manual',link,clean(b.revision,80),'Approved',user.id).run();return json({ok:true,id},201);
+ }
+ if(path==='pm/draft'&&method==='POST'){
+  if(!['admin','manager','supervisor'].includes(user.role))return json({error:'Insufficient permissions'},403);
+  const b=await body(request),assetCode=clean(b.asset_code,100),title=clean(b.title,200),frequency=clean(b.frequency,80),description=clean(b.description,3000);
+  const a=await db.prepare('SELECT id FROM assets WHERE company_id=? AND code=?').bind(user.company_id,assetCode).first();if(!a)return json({error:'Asset not found'},404);
+  if(!title)return json({error:'PM title required'},400);
+  const id=uid();await db.prepare('INSERT INTO pm_plans(id,code,title,asset_code,frequency,next_due,description,enabled,company_id) VALUES(?,?,?,?,?,?,?,0,?)').bind(id,'PM-'+id.slice(0,8).toUpperCase(),title,assetCode,frequency,clean(b.next_due,40),description,user.company_id).run();return json({ok:true,id,enabled:false},201);
+ }
  if(path==='me'&&method==='GET')return json({user});
  if(path==='orders'&&method==='GET'){const rows=await db.prepare('SELECT * FROM work_orders ORDER BY created_at DESC LIMIT 300').all();return json({orders:rows.results})}
  if(path==='orders'&&method==='POST'){
