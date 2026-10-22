@@ -56,11 +56,14 @@ export async function onRequest({request,env}){
   const id='SUP-'+uid().slice(0,10).toUpperCase();await db.prepare('INSERT INTO support_tickets(id,company_id,created_by,title,description,kind,priority) VALUES(?,?,?,?,?,?,?)').bind(id,user.company_id,user.id,title,description,kind,['Low','Normal','High'].includes(priority)?priority:'Normal').run();return json({ok:true,id},201);
  }
  if(path==='support/tickets/status'&&method==='PATCH'){
-  if(user.role!=='admin')return json({error:'Administrator required'},403);
+  return json({error:'Ticket status is managed by Reylex Support; support administration is not enabled in this customer portal'},403);
+  if(user.role!=='reylex_support')return json({error:'Reylex support access required'},403);
   const b=await body(request),status=clean(b.status,30),id=clean(b.id,80);
   if(!['Open','In Progress','Resolved','Closed'].includes(status))return json({error:'Invalid status'},400);
   const r=await db.prepare('UPDATE support_tickets SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?').bind(status,id,user.company_id).run();return json({ok:true,changed:r.meta.changes});
  }
+ if(path.startsWith('support/tickets/') && method==='GET' && !path.endsWith('/comments')){const id=decodeURIComponent(path.slice('support/tickets/'.length));const t=await db.prepare("SELECT * FROM support_tickets WHERE id=? AND company_id=? AND (created_by=? OR ?='admin')").bind(id,user.company_id,user.id,user.role).first();if(!t)return json({error:'Ticket not found'},404);const c=await db.prepare('SELECT c.*,u.name AS author_name FROM support_comments c LEFT JOIN users u ON u.id=c.author_id WHERE c.ticket_id=? AND c.company_id=? ORDER BY c.created_at ASC').bind(id,user.company_id).all();return json({ticket:t,comments:c.results})}
+ if(path.startsWith('support/tickets/') && path.endsWith('/comments') && method==='POST'){const id=decodeURIComponent(path.slice('support/tickets/'.length,-'/comments'.length));const t=await db.prepare("SELECT id FROM support_tickets WHERE id=? AND company_id=? AND (created_by=? OR ?='admin')").bind(id,user.company_id,user.id,user.role).first();if(!t)return json({error:'Ticket not found'},404);const b=await body(request),message=clean(b.message,5000);if(!message)return json({error:'Comment required'},400);await db.prepare('INSERT INTO support_comments(id,ticket_id,company_id,author_id,message) VALUES(?,?,?,?,?)').bind(uid(),id,user.company_id,user.id,message).run();return json({ok:true},201)}
  if(path==='support/articles'&&method==='GET'){
   const r=await db.prepare('SELECT id,title,category,body FROM support_articles WHERE published=1 ORDER BY category,title').all();return json({articles:r.results});
  }
