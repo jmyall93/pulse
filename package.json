@@ -1,6 +1,6 @@
 {
-  "name": "jelix-pulse-cmms",
-  "version": "0.6.0",
+  "name": "pulse-by-reylex",
+  "version": "1.0.0-foundation.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,5 +9,7 @@
     "db:local:init": "wrangler d1 execute pulse-db --local --file=migrations/0001_init.sql",
     "db:local:migrate": "wrangler d1 execute pulse-db --local --file=migrations/0002_migration.sql"
   },
-  "devDependencies": {"wrangler": "^4.0.0"}
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
 }
