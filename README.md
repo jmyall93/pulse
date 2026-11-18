@@ -1,3 +1,5 @@
+> **v1.5 development release:** Read `RELEASE_NOTES_V1_5.md` for required migration 0010, optional R2 binding, implementation scope, and limitations.
+
 # PULSE v0.6 — Experience Rebuild (deployment candidate)
 
 A redesigned, data-connected PULSE CMMS built from the v0.5 Cloudflare Workers/D1 application. This is a **test candidate**, not a production-certified release.

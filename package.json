@@ -1,6 +1,6 @@
 {
   "name": "pulse-by-reylex",
-  "version": "1.0.0-foundation.1",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "scripts": {
