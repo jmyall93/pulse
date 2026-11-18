@@ -83,34 +83,44 @@ export async function onRequest({request,env}){
 
  if(path==='migration/check'&&method==='POST'){
   if(!['admin','manager'].includes(user.role))return json({error:'Admin or manager access required'},403);
-  const b=await body(request),kind=clean(b.kind,30),source=clean(b.source,40),records=Array.isArray(b.records)?b.records:[];
-  if(source!=='Fiix'||!['assets','orders','pm'].includes(kind)||records.length>200)return json({error:'Unsupported source, entity type, or batch size (max 200)'},400);
-  const ids=records.map(r=>clean(r.external_id,160));if(ids.some(x=>!x))return json({error:'Every record requires an original Fiix ID'},400);
-  const found=await db.prepare('SELECT external_id FROM migration_keys WHERE source=? AND kind=?').bind(source,kind).all();const existing=new Set(found.results.map(x=>x.external_id));
+  const b=await body(request),kind=clean(b.kind,30),source=clean(b.source,80),records=Array.isArray(b.records)?b.records:[];
+  if(!source||!['assets','orders','pm'].includes(kind)||!records.length||records.length>100)return json({error:'Invalid source, record type, or batch size (1–100)'},400);
+  const ids=records.map(r=>clean(r.external_id,160));if(ids.some(x=>!x))return json({error:'Every record needs an original ID'},400);
+  const existing=new Set();for(let i=0;i<ids.length;i++){const match=await db.prepare('SELECT 1 FROM migration_keys WHERE source=? AND kind=? AND external_id=?').bind(user.company_id+'::'+source,kind,ids[i]).first();if(match)existing.add(ids[i])}
   return json({duplicates:ids.filter(x=>existing.has(x)),newCount:ids.filter(x=>!existing.has(x)).length});
  }
  if(path==='migration/import'&&method==='POST'){
   if(!['admin','manager'].includes(user.role))return json({error:'Admin or manager access required'},403);
-  const b=await body(request),kind=clean(b.kind,30),source=clean(b.source,40),records=Array.isArray(b.records)?b.records:[];
-  if(source!=='Fiix'||!['assets','orders','pm'].includes(kind)||!records.length||records.length>100)return json({error:'Unsupported source/type or invalid batch size (1–100)'},400);
+  const b=await body(request),kind=clean(b.kind,30),source=clean(b.source,80),records=Array.isArray(b.records)?b.records:[];
+  if(!source||!['assets','orders','pm'].includes(kind)||!records.length||records.length>100)return json({error:'Invalid source/type or batch size (1–100)'},400);
   let inserted=0,skipped=0,errors=[];const seen=new Set();
   for(let i=0;i<records.length;i++){
-   const r=records[i],external=clean(r.external_id,160),title=clean(r.title,200),assetCode=clean(r.asset_code,160);
-   if(!external||!title||(kind==='pm'&&!assetCode)){errors.push({row:i+1,error:'Missing ID, title, or PM asset code'});continue}
+   const r=records[i]||{},external=clean(r.external_id,160),title=clean(r.title,200),assetCode=clean(r.asset_code,100);
+   if(!external||!title||(kind==='pm'&&!assetCode)){errors.push({row:i+1,error:'Missing original ID, title, or PM asset code'});continue}
    if(seen.has(external)){skipped++;continue}seen.add(external);
-   const id=uid();const existing=await db.prepare('SELECT 1 FROM migration_keys WHERE source=? AND kind=? AND external_id=?').bind(source,kind,external).first();if(existing){skipped++;continue}
-   try{
-    let statement;
-    if(kind==='assets')statement=db.prepare('INSERT INTO assets(id,code,name,location,description,source) VALUES(?,?,?,?,?,?)').bind(id,external,title,clean(r.location,180),clean(r.description,4000),'Fiix');
-    else if(kind==='pm')statement=db.prepare('INSERT INTO pm_plans(id,code,title,asset_code,frequency,next_due,description,enabled) VALUES(?,?,?,?,?,?,?,0)').bind(id,external,title,assetCode,clean(r.frequency,80),clean(r.next_due,40),clean(r.description,4000));
-    else statement=db.prepare('INSERT INTO work_orders(id,title,description,status,priority,location,asset,source,created_at) VALUES(?,?,?,?,?,?,?,?,?)').bind('WO-FIIX-'+id.slice(0,12).toUpperCase(),title,clean(r.description,4000),['New','Assigned','In Progress','On Hold','Completed','Closed'].includes(r.status)?r.status:'New',['Low','Normal','High','Critical'].includes(r.priority)?r.priority:'Normal',clean(r.location,180),assetCode,'Fiix Import',/^\d{4}-\d{2}-\d{2}/.test(r.created_at||'')?r.created_at:new Date().toISOString());
-    await db.batch([statement,db.prepare('INSERT INTO migration_keys(source,kind,external_id,record_id) VALUES(?,?,?,?)').bind(source,kind,external,id)]);inserted++;
-   }catch(e){errors.push({row:i+1,error:'Record could not be imported; check duplicate codes or field values'})}
+   if(await db.prepare('SELECT 1 FROM migration_keys WHERE source=? AND kind=? AND external_id=?').bind(user.company_id+'::'+source,kind,external).first()){skipped++;continue}
+   const id=uid();try{
+    let stmt;
+    if(kind==='assets'){
+     const code=clean(r.code,100)||external;
+     if(await db.prepare('SELECT 1 FROM assets WHERE company_id=? AND code=?').bind(user.company_id,code).first())throw Error('Asset code already exists');
+     stmt=db.prepare('INSERT INTO assets(id,code,name,location,description,source,company_id,manufacturer,model,serial_number,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(id,code,title,clean(r.location,180),clean(r.description,3000),source+' Import',user.company_id,clean(r.manufacturer,120),clean(r.model,160),clean(r.serial_number,120),clean(r.status,50)||'Operational');
+    }else if(kind==='pm'){
+     const asset=await db.prepare('SELECT id,site_id FROM assets WHERE company_id=? AND code=?').bind(user.company_id,assetCode).first();if(!asset||!await allowedSite(db,user,asset.site_id))throw Error('Asset code not found or not accessible; import assets first');
+     const unit=clean(r.schedule_unit,12).toLowerCase()||'month',interval=Number(r.schedule_interval||1),due=clean(r.next_due,10)||new Date().toISOString().slice(0,10);
+     if(!['day','week','month','year'].includes(unit)||!Number.isInteger(interval)||interval<1||interval>365||!/^\d{4}-\d{2}-\d{2}$/.test(due)||!Number.isFinite(Date.parse(due+'T12:00:00Z')))throw Error('Invalid PM frequency or due date');
+     stmt=db.prepare('INSERT INTO pm_plans(id,code,title,asset_code,frequency,next_due,description,enabled,company_id,site_id,schedule_unit,schedule_interval,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,'PM-'+id.slice(0,8).toUpperCase(),title,assetCode,unit+' / '+interval,due,clean(r.description,3000),0,user.company_id,asset.site_id,unit,interval,['Low','Normal','High','Critical'].includes(r.priority)?r.priority:'Normal');
+    }else{
+     let site=null;if(assetCode){const asset=await db.prepare('SELECT site_id FROM assets WHERE company_id=? AND code=?').bind(user.company_id,assetCode).first();if(!asset||!await allowedSite(db,user,asset.site_id))throw Error('Linked asset not found or not accessible');site=asset.site_id}
+     const created=/^\d{4}-\d{2}-\d{2}/.test(clean(r.created_at,30))?clean(r.created_at,30):new Date().toISOString();
+     stmt=db.prepare('INSERT INTO work_orders(id,title,description,status,priority,location,asset,source,created_at,company_id,site_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(id,title,clean(r.description,3000),['New','Assigned','In Progress','On Hold','Completed','Closed'].includes(r.status)?r.status:'New',['Low','Normal','High','Critical'].includes(r.priority)?r.priority:'Normal',clean(r.location,180),assetCode,source+' Import',created,user.company_id,site);
+    }
+    await db.batch([stmt,db.prepare('INSERT INTO migration_keys(source,kind,external_id,record_id) VALUES(?,?,?,?)').bind(user.company_id+'::'+source,kind,external,id)]);inserted++;
+   }catch(e){errors.push({row:i+1,error:e.message||'Unable to import record'})}
   }
   return json({inserted,skipped,errors});
  }
 
- // Asset registry and reusable equipment-model library. Company scoped.
  if(path==='equipment'&&method==='GET'){
   const rows=await db.prepare('SELECT * FROM equipment_models WHERE company_id=? ORDER BY manufacturer,model LIMIT 500').bind(user.company_id).all();return json({equipment:rows.results});
  }
